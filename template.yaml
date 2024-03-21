@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  aws-iot-backup
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID of the VPC to deploy the backup script within
+  PrivateSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private Subnets
+
+Resources:
+  IoTConfigurationBackup:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: "iot-config-backup"
+
+  IoTBackupCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: 'IoTBackupCluster'
+      CapacityProviders:
+        - FARGATE
+
+  TaskExecutionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${AWS::StackName}"
+
+  BackupIoTDataExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "ecs-tasks.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+
+  BackupIoTDataTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSIoTConfigReadOnlyAccess
+      Policies:
+        - PolicyName: s3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:AbortMultipartUpload"
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                  - "s3:PutObject"
+                Resource:
+                  - !Sub "arn:aws:s3:::${IoTConfigurationBackup}"
+                  - !Sub "arn:aws:s3:::${IoTConfigurationBackup}/*"
+        - PolicyName: list-provisioning-templates
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "iot:ListProvisioningTemplates"
+                  - "iot:DescribeProvisioningTemplate"
+                Resource: "*"
+
+
+  BackupIoTDataTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: 'IoTBackupTask'
+      NetworkMode: 'awsvpc'
+      ExecutionRoleArn: !GetAtt BackupIoTDataExecutionRole.Arn
+      TaskRoleArn: !GetAtt BackupIoTDataTaskRole.Arn
+      Cpu: 4096
+      Memory: 8192
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: 'X86_64'
+        OperatingSystemFamily: 'LINUX'
+      ContainerDefinitions:
+        - Name: 'IoTBackupTask'
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws-iot-backup:latest"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub "${AWS::StackName}"
+              awslogs-region: !Sub "${AWS::Region}"
+              awslogs-create-group: true
+              awslogs-stream-prefix: !Sub "${AWS::StackName}"
+          Environment:
+            - Name: ' BACKUP_BUCKET'
+              Value: !Ref IoTConfigurationBackup
+            - Name: 'BACKUP_REGION'
+              Value: !Sub ${AWS::Region}
+
+  RestoreSingleExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "ecs-tasks.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+
+  RestoreSingleTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSIoTConfigAccess
+      Policies:
+        - PolicyName: s3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetBucketLocation"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketMultipartUploads"
+                Resource:
+                  - !Sub "arn:aws:s3:::${IoTConfigurationBackup}"
+                  - !Sub "arn:aws:s3:::${IoTConfigurationBackup}/*"
+
+
+  RestoreSingleThingTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: 'IoTRestoreTask'
+      NetworkMode: 'awsvpc'
+      ExecutionRoleArn: !GetAtt BackupIoTDataExecutionRole.Arn
+      TaskRoleArn: !GetAtt BackupIoTDataTaskRole.Arn
+      Cpu: 4096
+      Memory: 8192
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: 'X86_64'
+        OperatingSystemFamily: 'LINUX'
+      ContainerDefinitions:
+        - Name: 'IoTRestoreSingleTask'
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws-iot-backup:latest"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub "${AWS::StackName}"
+              awslogs-region: !Sub "${AWS::Region}"
+              awslogs-create-group: true
+              awslogs-stream-prefix: !Sub "${AWS::StackName}"
+          Environment:
+            - Name: BACKUP_DATE_PREFIX
+              Value: 'CHANGE ME TO YYYY/MM/DD'
+            - Name: BACKUP_BUCKET
+              Value: !Ref IoTConfigurationBackup
+            - Name: RESTORE_REGION
+              Value: 'CHANGE ME TO DESIRED REGION'
+            - Name: THING_NAME
+              Value: 'CHANGE ME TO DESIRED THING NAME'
+          Command:
+            - "python"
+            - "./restore_single.py"
+
+  RestoreAllTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: 'IoTRestoreAllTask'
+      NetworkMode: 'awsvpc'
+      ExecutionRoleArn: !GetAtt BackupIoTDataExecutionRole.Arn
+      TaskRoleArn: !GetAtt BackupIoTDataTaskRole.Arn
+      Cpu: 4096
+      Memory: 8192
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: 'X86_64'
+        OperatingSystemFamily: 'LINUX'
+      ContainerDefinitions:
+        - Name: 'IoTRestoreTask'
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/aws-iot-backup:latest"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub "${AWS::StackName}"
+              awslogs-region: !Sub "${AWS::Region}"
+              awslogs-create-group: true
+              awslogs-stream-prefix: !Sub "${AWS::StackName}"
+          Environment:
+            - Name: BACKUP_DATE_PREFIX
+              Value: 'CHANGE ME TO YYYY/MM/DD'
+            - Name: BACKUP_BUCKET
+              Value: !Ref IoTConfigurationBackup
+            - Name: RESTORE_REGION
+              Value: 'CHANGE ME TO DESIRED REGION'
+          Command:
+            - "python"
+            - "./restore_all.py"
+
+  TaskSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: "Security group defining traffic for the backup script"
+
+  BackupTaskScheduleTriggerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - 'events.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceEventsRole
+
+  BackupTaskSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: "BackupIoTConfiguration"
+      Description: "Backup IoT Configuration"
+      ScheduleExpression: cron(0 0 * * ? *)
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt IoTBackupCluster.Arn
+          Id: "IoTBackupTask"
+          RoleArn: !GetAtt BackupTaskScheduleTriggerRole.Arn
+          EcsParameters:
+            TaskDefinitionArn: !Ref BackupIoTDataTask
+            TaskCount: 1
+            NetworkConfiguration:
+              AwsVpcConfiguration:
+                Subnets: !Ref PrivateSubnets
+                SecurityGroups:
+                - !Ref TaskSecurityGroup
+            LaunchType: "FARGATE"
+
