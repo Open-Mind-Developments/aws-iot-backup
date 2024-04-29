@@ -7,7 +7,7 @@ This repo provides example code, a dockerfile and cloudformation template to bac
 Use git to clone the repository
 
 ```bash
-git clone https://github.com/Lomi-OpenSource/aws-iot-backup.git
+git clone https://github.com/Open-Mind-Developments/aws-iot-backup
 ```
 
 Use pipenv to install the required packages
